@@ -1028,3 +1028,49 @@ pub(crate) fn path_to_cstring(path: &Path) -> Result<CString, LocalAsrError> {
         LocalAsrError::InvalidModel("model path contains interior NUL byte".to_owned())
     })
 }
+
+#[cfg(target_os = "macos")]
+fn macos_sysctl_u32(name: &CStr) -> Option<u32> {
+    extern "C" {
+        fn sysctlbyname(
+            name: *const c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *const c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+
+    let mut value: u32 = 0;
+    let mut size = std::mem::size_of::<u32>();
+    let rc = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            (&mut value as *mut u32).cast::<c_void>(),
+            &mut size,
+            ptr::null(),
+            0,
+        )
+    };
+    (rc == 0 && size == std::mem::size_of::<u32>()).then_some(value)
+}
+
+/// Count fast (non-Efficiency) physical CPU cores on macOS Apple Silicon.
+///
+/// - 3+ perf levels (e.g. Apple M6: Super + Performance + Efficiency): sums levels `0..n-1`
+/// - 2 perf levels (e.g. M1–M5: Performance + Efficiency): level `0`
+/// - 1 perf level (homogeneous / Intel): level `0`
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_fast_physical_cores() -> Option<usize> {
+    let levels = macos_sysctl_u32(c"hw.nperflevels")?;
+    if levels == 0 {
+        return None;
+    }
+    let fast_levels = if levels > 1 { levels - 1 } else { 1 };
+    let mut total = 0usize;
+    for level in 0..fast_levels {
+        let key = CString::new(format!("hw.perflevel{level}.physicalcpu")).ok()?;
+        total = total.saturating_add(macos_sysctl_u32(&key)? as usize);
+    }
+    (total > 0).then_some(total)
+}

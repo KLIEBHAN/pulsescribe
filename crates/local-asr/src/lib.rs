@@ -236,22 +236,104 @@ pub fn format_qwen3_hotwords(keywords: &[String]) -> Option<String> {
     }
 }
 
-/// Maximum piece length (in seconds) for NeMo offline models (`parakeet-v3` and `canary-1b-v2`).
+/// Maximum piece length (in seconds) for NeMo Canary and encoder-decoder offline models
+/// (`canary-1b-v2`, `cohere-transcribe`, `qwen3-asr-0.6b`).
 ///
-/// Mirrors `providers/nemo_model.py`: Canary emits empty output beyond ~37 s and Parakeet drops
-/// words on long utterances; 15 s segments cut at the quietest 100 ms in the final 5 s preserve
-/// full accuracy.
+/// Mirrors `providers/nemo_model.py`: Canary emits empty output beyond ~37 s and Qwen3-ASR's
+/// 512-token KV cache budget is sized around ~15 s audio pieces.
 pub const NEMO_SEGMENT_SECONDS: usize = 15;
+
+/// Maximum piece length (in seconds) for NeMo TDT/RNN-T transducers (`parakeet-ultra`,
+/// `parakeet-v3`).
+///
+/// Parakeet Ultra is trained for up to 30 s segments; cutting at 25 s avoids mid-word boundary
+/// splits on typical 15–25 s dictations and cuts multi-segment overhead without dropping words.
+pub const TRANSDUCER_SEGMENT_SECONDS: usize = 25;
+
 const NEMO_CUT_SEARCH_SECONDS: usize = 5;
+
+/// Conservative RMS threshold for trimming dead leading/trailing silence before offline CPU ASR.
+///
+/// Matches `SPEECH_VAD_THRESHOLD_RMS` (`0.002`) so quiet speech onsets remain intact while dead
+/// hotkey lead-in and tail silence is skipped.
+const SILENCE_TRIM_THRESHOLD_RMS: f32 = 0.002;
+const SILENCE_TRIM_FRAME_MS: usize = 20;
+const SILENCE_TRIM_PADDING_MS: usize = 200;
+
+/// Trim dead leading and trailing silence from mono `f32` audio, preserving 200 ms of padding on
+/// both sides of the first and last active 20 ms frame.
+///
+/// Returns `samples` unchanged when empty, when `sample_rate == 0`, or when no frame exceeds the
+/// conservative speech threshold (so quiet recordings are never silently discarded).
+pub fn trim_leading_trailing_silence(samples: &[f32], sample_rate: u32) -> &[f32] {
+    if samples.is_empty() || sample_rate == 0 {
+        return samples;
+    }
+    let sr = sample_rate as usize;
+    let frame = ((sr * SILENCE_TRIM_FRAME_MS) / 1000).max(1);
+    let threshold_sq =
+        f64::from(SILENCE_TRIM_THRESHOLD_RMS) * f64::from(SILENCE_TRIM_THRESHOLD_RMS);
+
+    let frame_is_active = |chunk: &[f32]| -> bool {
+        let mut sum_sq = 0.0_f64;
+        for &sample in chunk {
+            if sample.is_finite() {
+                let v = f64::from(sample);
+                sum_sq += v * v;
+            }
+        }
+        (sum_sq / chunk.len() as f64) > threshold_sq
+    };
+
+    let mut first_active = None;
+    let mut offset = 0usize;
+    while offset < samples.len() {
+        let end = (offset + frame).min(samples.len());
+        if frame_is_active(&samples[offset..end]) {
+            first_active = Some(offset);
+            break;
+        }
+        offset = end;
+    }
+    let Some(first) = first_active else {
+        return samples;
+    };
+
+    let mut last_active = samples.len();
+    let mut end = samples.len();
+    while end > first {
+        let start = end.saturating_sub(frame).max(first);
+        if frame_is_active(&samples[start..end]) {
+            last_active = end;
+            break;
+        }
+        end = start;
+    }
+
+    let pad = (sr * SILENCE_TRIM_PADDING_MS) / 1000;
+    let trimmed_start = first.saturating_sub(pad);
+    let trimmed_end = last_active.saturating_add(pad).min(samples.len());
+    &samples[trimmed_start..trimmed_end]
+}
 
 /// Split mono `f32` audio into pieces of at most [`NEMO_SEGMENT_SECONDS`], cutting each long piece
 /// at the midpoint of the quietest 100 ms frame in its last 5 seconds.
 pub fn split_nemo_segments(samples: &[f32], sample_rate: u32) -> Vec<&[f32]> {
+    split_audio_segments(samples, sample_rate, NEMO_SEGMENT_SECONDS)
+}
+
+/// Split mono `f32` audio into pieces of at most `max_segment_seconds`, cutting each long piece at
+/// the midpoint of the quietest 100 ms frame in its last 5 seconds.
+pub fn split_audio_segments(
+    samples: &[f32],
+    sample_rate: u32,
+    max_segment_seconds: usize,
+) -> Vec<&[f32]> {
     if samples.is_empty() || sample_rate == 0 {
         return Vec::new();
     }
     let sr = sample_rate as usize;
-    let limit = NEMO_SEGMENT_SECONDS.saturating_mul(sr);
+    let limit = max_segment_seconds.saturating_mul(sr);
     let search = NEMO_CUT_SEARCH_SECONDS.saturating_mul(sr);
     let frame = (sr / 10).max(1);
     if limit == 0 || samples.len() <= limit {
@@ -390,5 +472,40 @@ mod tests {
         let short = vec![0.1_f32; 5 * sr];
         assert_eq!(split_nemo_segments(&short, sr as u32).len(), 1);
         assert!(split_nemo_segments(&[], sr as u32).is_empty());
+
+        // Transducer limit (25 s) keeps an 18 s utterance intact without mid-utterance cuts.
+        let transducer_pieces = split_audio_segments(&audio, sr as u32, TRANSDUCER_SEGMENT_SECONDS);
+        assert_eq!(transducer_pieces.len(), 1);
+        assert_eq!(transducer_pieces[0].len(), audio.len());
+    }
+
+    #[test]
+    fn trim_leading_trailing_silence_keeps_padding_and_preserves_quiet_or_noisy_audio() {
+        let sr = 16_000usize;
+        assert!(trim_leading_trailing_silence(&[], sr as u32).is_empty());
+        assert_eq!(trim_leading_trailing_silence(&[0.5; 100], 0).len(), 100);
+
+        // All-quiet audio must not be emptied.
+        let quiet = vec![0.0005_f32; sr];
+        assert_eq!(trim_leading_trailing_silence(&quiet, sr as u32).len(), sr);
+
+        // 1.0 s silence + 0.5 s speech + 1.0 s silence -> 0.2 s pad + 0.5 s speech + 0.2 s pad = 0.9 s.
+        let mut padded = vec![0.0_f32; sr];
+        padded.extend(std::iter::repeat_n(0.1_f32, sr / 2));
+        padded.extend(std::iter::repeat_n(0.0_f32, sr));
+        let trimmed = trim_leading_trailing_silence(&padded, sr as u32);
+        assert_eq!(trimmed.len(), (sr * 9) / 10);
+
+        // Non-finite samples inside silent regions must not prevent trimming.
+        let mut with_nan = vec![0.0_f32; sr];
+        with_nan[100] = f32::NAN;
+        with_nan.extend(std::iter::repeat_n(0.1_f32, sr / 2));
+        with_nan.extend(std::iter::repeat_n(0.0_f32, sr));
+        let trimmed_nan = trim_leading_trailing_silence(&with_nan, sr as u32);
+        assert_eq!(trimmed_nan.len(), (sr * 9) / 10);
+
+        // Continuously active (noisy) audio stays untouched.
+        let noisy = vec![0.05_f32; sr];
+        assert_eq!(trim_leading_trailing_silence(&noisy, sr as u32).len(), sr);
     }
 }
