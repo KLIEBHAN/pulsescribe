@@ -2131,7 +2131,7 @@ function renderDiagnosticsView() {
       el("div", { className: "metrics-grid" }, [
         el("div", { className: "metric-cell" }, [
           el("span", { className: "metric-label", text: t("diag.metricVersion") }),
-          el("span", { className: "metric-value tabular", text: `v${app.version || "2.3.0"}` }),
+          el("span", { className: "metric-value tabular", text: `v${app.version || "2.3.1"}` }),
         ]),
         el("div", { className: "metric-cell" }, [
           el("span", { className: "metric-label", text: t("diag.metricPlatform") }),
@@ -2155,7 +2155,7 @@ function renderDiagnosticsView() {
   const upd = state.updateState;
   const updStatus = upd?.status || "idle";
   const updBusy = updStatus === "checking" || updStatus === "downloading" || updStatus === "preparing";
-  const curVer = upd?.current_version || app.version || "2.3.0";
+  const curVer = upd?.current_version || app.version || "2.3.1";
   const latVer = upd?.latest_version || "";
   const updateSubtitle = (() => {
     if (!upd) return t("diag.checkPrompt");

@@ -243,7 +243,7 @@ function createPreviewStore() {
     switch (cmd) {
       case "get_app_state":
         return {
-          version: "2.3.0",
+          version: "2.3.1",
           platform: "macos",
           paste_shortcut: "⌘V",
           config_dir: "~/.pulsescribe",
@@ -466,7 +466,7 @@ function createPreviewStore() {
           path: "~/.pulsescribe/diagnostics-preview.json",
           preview: JSON.stringify(
             {
-              version: "2.3.0",
+              version: "2.3.1",
               os: "macos",
               mode: settings.mode,
               permissions,
@@ -478,7 +478,7 @@ function createPreviewStore() {
         };
       case "get_update_state":
         return {
-          current_version: "2.3.0",
+          current_version: "2.3.1",
           status: "idle",
           latest_version: null,
           release_url: null,
@@ -494,9 +494,9 @@ function createPreviewStore() {
         };
       case "check_for_updates":
         return {
-          current_version: "2.3.0",
+          current_version: "2.3.1",
           status: "idle",
-          latest_version: "2.3.0",
+          latest_version: "2.3.1",
           release_url: "https://github.com/KLIEBHAN/pulsescribe/releases",
           release_notes: null,
           asset_name: null,
@@ -510,7 +510,7 @@ function createPreviewStore() {
         };
       case "download_update":
         return {
-          current_version: "2.3.0",
+          current_version: "2.3.1",
           status: "ready",
           latest_version: "2.4.0",
           release_url: "https://github.com/KLIEBHAN/pulsescribe/releases/tag/v2.4.0",
@@ -526,7 +526,7 @@ function createPreviewStore() {
         };
       case "install_update":
         return {
-          current_version: "2.3.0",
+          current_version: "2.3.1",
           status: "ready",
           latest_version: "2.4.0",
           release_url: "https://github.com/KLIEBHAN/pulsescribe/releases/tag/v2.4.0",
