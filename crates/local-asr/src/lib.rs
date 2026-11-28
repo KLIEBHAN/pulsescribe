@@ -252,10 +252,11 @@ pub const TRANSDUCER_SEGMENT_SECONDS: usize = 25;
 
 const NEMO_CUT_SEARCH_SECONDS: usize = 5;
 
-/// Conservative ceiling RMS threshold for trimming dead leading/trailing silence before offline CPU
-/// ASR (`0.002`, matching `SPEECH_VAD_THRESHOLD_RMS`). On quieter recordings the threshold scales
-/// down to 5% of peak frame RMS (`-26 dB`) so soft speech onsets and tails are preserved.
-const SILENCE_TRIM_MAX_THRESHOLD_RMS: f32 = 0.002;
+/// Conservative dead-silence ceiling RMS threshold for trimming leading/trailing silence before
+/// offline CPU ASR (`0.0008`, ~`-62 dBFS`), kept well below `SPEECH_VAD_THRESHOLD_RMS` (`0.002`)
+/// so quiet/whispered speech (e.g. `0.001` RMS) preceding or following louder speech is never
+/// clipped. On very quiet recordings the threshold scales down further to 5% of peak frame RMS.
+const SILENCE_TRIM_MAX_THRESHOLD_RMS: f32 = 0.0008;
 const SILENCE_TRIM_RELATIVE_RATIO: f64 = 0.05;
 const SILENCE_TRIM_FRAME_MS: usize = 20;
 const SILENCE_TRIM_PADDING_MS: usize = 250;
@@ -263,10 +264,10 @@ const SILENCE_TRIM_PADDING_MS: usize = 250;
 /// Trim dead leading and trailing silence from mono `f32` audio, preserving 250 ms of padding on
 /// both sides of the first and last active 20 ms frame.
 ///
-/// Uses an adaptive threshold `min(0.002, 0.05 * max_frame_rms)` so dead hotkey lead-in/tail
-/// silence is skipped on normal speech while soft edges on quiet recordings remain intact.
+/// Uses a dedicated dead-silence floor `min(0.0008, 0.05 * max_frame_rms)` so dead hotkey
+/// lead-in/tail silence is skipped while quiet speech before or after louder speech remains intact.
 /// Returns `samples` unchanged when empty, when `sample_rate == 0`, or when no frame exceeds the
-/// speech floor.
+/// dead-silence floor.
 pub fn trim_leading_trailing_silence(samples: &[f32], sample_rate: u32) -> &[f32] {
     if samples.is_empty() || sample_rate == 0 {
         return samples;
@@ -538,11 +539,21 @@ mod tests {
         let trimmed = trim_leading_trailing_silence(&padded, sr as u32);
         assert_eq!(trimmed, &padded[expected_start..expected_end]);
 
-        // Soft speech onset (0.001 RMS) on a quiet recording (0.01 RMS body) stays intact thanks to
-        // the adaptive threshold (5% of 0.01 = 0.0005 < 0.001).
+        // Quiet speech (0.001 RMS) both before and after loud speech (0.1 RMS) must be retained,
+        // even when separated by >250 ms from the loud center.
+        let mut mixed = vec![0.0_f32; sr];
+        mixed.extend(std::iter::repeat_n(0.001_f32, sr));
+        mixed.extend(std::iter::repeat_n(0.1_f32, sr / 2));
+        mixed.extend(std::iter::repeat_n(0.001_f32, sr));
+        mixed.extend(std::iter::repeat_n(0.0_f32, sr));
+        let trimmed_mixed = trim_leading_trailing_silence(&mixed, sr as u32);
+        assert_eq!(trimmed_mixed, &mixed[(sr - pad)..(3 * sr + sr / 2 + pad)]);
+
+        // Soft speech onset (0.0004 RMS) on a very quiet recording (0.004 RMS body) stays intact
+        // thanks to the adaptive threshold (5% of 0.004 = 0.0002 < 0.0004).
         let mut quiet_onset = vec![0.0_f32; sr];
-        quiet_onset.extend(std::iter::repeat_n(0.001_f32, sr / 2));
-        quiet_onset.extend(std::iter::repeat_n(0.01_f32, sr / 2));
+        quiet_onset.extend(std::iter::repeat_n(0.0004_f32, sr / 2));
+        quiet_onset.extend(std::iter::repeat_n(0.004_f32, sr / 2));
         quiet_onset.extend(std::iter::repeat_n(0.0_f32, sr));
         let trimmed_quiet = trim_leading_trailing_silence(&quiet_onset, sr as u32);
         assert_eq!(trimmed_quiet, &quiet_onset[(sr - pad)..(2 * sr + pad)]);
